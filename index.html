@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>E2EE Chat</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
+</head>
+<body class="p-4">
+
+<h2>WebSocket E2EE Chat</h2>
+<div id="chat" style="width:400px;height:300px;border:1px solid #ccc;overflow:auto;padding:5px;"></div>
+<input id="msg" type="text" placeholder="Message" style="width:300px;">
+<button onclick="sendMessage()">Send</button>
+
+<script>
+let ws;
+let username = prompt("Enter your username:");
+let target = prompt("Enter recipient username:");
+
+// Генерация пары ключей RSA для клиента
+let rsa = window.crypto.subtle;
+let userKeyPair;
+async function generateKeys() {
+    userKeyPair = await rsa.generateKey({
+        name: "RSA-OAEP",
+        modulusLength: 2048,
+        publicExponent: new Uint8Array([1,0,1]),
+        hash: "SHA-256"
+    }, true, ["encrypt","decrypt"]);
+}
+generateKeys();
+
+// Сессия (AES ключ) для шифрования сообщений
+let sessionKey; // будет получен зашифрованный через RSA от другого пользователя
+
+async function encryptMessage(msg) {
+    const enc = new TextEncoder();
+    const cipher = await window.crypto.subtle.encrypt(
+        {name:"AES-GCM", iv: new Uint8Array(12)},
+        sessionKey,
+        enc.encode(msg)
+    );
+    return btoa(String.fromCharCode(...new Uint8Array(cipher)));
+}
+
+async function decryptMessage(data) {
+    const dec = new TextDecoder();
+    let cipher = Uint8Array.from(atob(data), c=>c.charCodeAt(0));
+    let decrypted = await window.crypto.subtle.decrypt(
+        {name:"AES-GCM", iv:new Uint8Array(12)},
+        sessionKey,
+        cipher
+    );
+    return dec.decode(decrypted);
+}
+
+function connect() {
+    ws = new WebSocket(`ws://localhost:8000/ws/${username}`);
+    ws.onmessage = async (event) => {
+        let data = JSON.parse(event.data);
+        if(data.message){
+            let decrypted = await decryptMessage(data.message);
+            document.getElementById("chat").innerHTML += `<b>${data.from}:</b> ${decrypted}<br>`;
+        }
+    }
+}
+
+async function sendMessage() {
+    let msg = document.getElementById("msg").value;
+    if(!msg) return;
+    let encrypted = await encryptMessage(msg);
+    ws.send(JSON.stringify({to: target, from: username, message: encrypted}));
+    document.getElementById("chat").innerHTML += `<b>You:</b> ${msg}<br>`;
+    document.getElementById("msg").value = "";
+}
+
+connect();
+</script>
+
+</body>
+</html>
